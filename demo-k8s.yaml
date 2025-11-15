@@ -1,0 +1,102 @@
+# demo-k8s.yaml
+
+# 1. O StatefulSet
+# Garante armazenamento persistente e identidade estável
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: flask-app
+spec:
+  # Nome do serviço que gerencia este set
+  serviceName: "flask-service"
+  replicas: 1 # Começamos com 1 pod
+  selector:
+    matchLabels:
+      app: flask # Label para o serviço encontrar os pods
+  template:
+    metadata:
+      labels:
+        app: flask # Label que o seletor acima usa
+    spec:
+      containers:
+      - name: flask
+        image: flask-demo:v1 # Nossa imagem local
+        imagePullPolicy: IfNotPresent # Força o K8s a usar a imagem local
+        ports:
+        - containerPort: 5000
+        
+        # Isso é a "Alocação de Recursos"
+        # É crucial para o HPA funcionar!
+        resources:
+          requests:
+            cpu: "100m" # Pede 10% de 1 CPU (100 milicores)
+          limits:
+            cpu: "500m" # Limita a 50% de 1 CPU
+            
+        # Monta o volume persistente no caminho /data
+        volumeMounts:
+        - name: db-storage
+          mountPath: /data
+          
+        # Passa o nome do pod como variável de ambiente (bom para a demo)
+        env:
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+
+  # Template para o PersistentVolumeClaim (PVC)
+  # O StatefulSet criará automaticamente um PVC chamado 'db-storage-flask-app-0'
+  volumeClaimTemplates:
+  - metadata:
+      name: db-storage
+    spec:
+      accessModes: [ "ReadWriteOnce" ] # O volume só pode ser usado por 1 nó
+      resources:
+        requests:
+          storage: 1Gi # Pedimos 1GB de espaço
+
+---
+
+# 2. O Serviço (Service)
+# Expõe nossos pods para acesso externo
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-service
+spec:
+  type: NodePort # Expõe em uma porta em nosso nó (Minikube)
+  selector:
+    app: flask # Seleciona os pods com esta label
+  ports:
+  - protocol: TCP
+    port: 5000       # Porta interna do Cluster
+    targetPort: 5000   # Porta do container
+    nodePort: 30007    # Porta externa (vamos acessar por aqui)
+
+---
+
+# 3. O Autoscaler (HPA)
+# Observa a CPU e escala o StatefulSet
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: flask-hpa
+spec:
+  # Aponta para o StatefulSet que queremos escalar
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: flask-app
+    
+  minReplicas: 1 # Mínimo de 1 pod
+  maxReplicas: 5 # Máximo de 5 pods
+  
+  metrics:
+  - type: Resource # Escalar baseado em recursos (CPU/Memória)
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        # Definimos um alvo baixo (30%) para ser fácil de acionar na demo
+        averageUtilization: 30
